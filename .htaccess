@@ -1,0 +1,52 @@
+# =============================================================================
+# SinclearChat – Projekt-Root
+# =============================================================================
+# Sicherheitsnetz für Shared-Hosting o.ä., wo der DocumentRoot NICHT auf
+# public/ gesetzt werden kann. Empfohlene Konfiguration ist trotzdem,
+# den DocumentRoot direkt auf das public/ Verzeichnis zu legen.
+# =============================================================================
+
+# ---- Directory Listing komplett aus ----------------------------------------
+Options -Indexes -MultiViews
+
+# ---- Server-Signatur reduzieren --------------------------------------------
+<IfModule mod_headers.c>
+    Header unset X-Powered-By
+    Header always unset Server
+</IfModule>
+
+# ---- Versteckte Dateien (.env, .git, .gitignore, ...) komplett sperren -----
+<FilesMatch "^\.">
+    Require all denied
+</FilesMatch>
+
+# ---- Sensible Dateierweiterungen blockieren --------------------------------
+<FilesMatch "\.(env|ini|log|sql|sh|md|lock|json|yaml|yml|bak|backup|swp|dist|example|phps|phtml|inc|tpl|twig)$">
+    Require all denied
+</FilesMatch>
+
+# ---- Sensible Verzeichnisse blockieren -------------------------------------
+RedirectMatch 404 /\.git(/|$)
+RedirectMatch 404 /vendor(/|$)
+RedirectMatch 404 /src(/|$)
+RedirectMatch 404 /migrations(/|$)
+RedirectMatch 404 /scripts(/|$)
+
+# ---- Alles auf public/ umleiten (Front Controller) -------------------------
+<IfModule mod_rewrite.c>
+    RewriteEngine On
+
+    # /public direkt aufgerufen -> auf Root umleiten (verhindert Doppel-URL)
+    RewriteCond %{THE_REQUEST} \s/+public/([^\s?]*) [NC]
+    RewriteRule ^ /%1 [R=301,L,NE]
+
+    # Vorhandene Dateien in public/ ausliefern
+    RewriteCond %{REQUEST_URI} !^/public/
+    RewriteCond %{DOCUMENT_ROOT}/public/$1 -f [OR]
+    RewriteCond %{DOCUMENT_ROOT}/public/$1 -d
+    RewriteRule ^(.*)$ public/$1 [L]
+
+    # Alles andere an public/index.php (Front Controller)
+    RewriteCond %{REQUEST_URI} !^/public/
+    RewriteRule ^ public/index.php [QSA,L]
+</IfModule>

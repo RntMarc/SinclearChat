@@ -1,0 +1,17 @@
+{
+  "name": "sinclearchat/chat-api",
+  "description": "SinclearChat PHP 8 Chat API",
+  "type": "project",
+  "require": {
+    "php": ">=8.2",
+    "ramsey/uuid": "^4.7"
+  },
+  "autoload": {
+    "psr-4": {
+      "SinclearChat\\": "src/"
+    }
+  },
+  "scripts": {
+    "migrate": "php -r 'require \"scripts/migrate.php\";'"
+  }
+}

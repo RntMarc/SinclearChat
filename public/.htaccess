@@ -1,0 +1,63 @@
+# =============================================================================
+# SinclearChat – Public Document Root
+# =============================================================================
+# Front-Controller-Routing: alle Requests werden an index.php delegiert.
+# Zusätzlich Hardening (Directory-Listing aus, Dotfiles sperren, Header).
+# =============================================================================
+
+# ---- Front Controller -------------------------------------------------------
+<IfModule mod_rewrite.c>
+    RewriteEngine On
+
+    # Vorhandene Dateien/Verzeichnisse direkt ausliefern lassen
+    RewriteCond %{REQUEST_FILENAME} -f [OR]
+    RewriteCond %{REQUEST_FILENAME} -d
+    RewriteRule ^ - [L]
+
+    # Alles andere geht an index.php
+    RewriteRule ^ index.php [QSA,L]
+</IfModule>
+
+# ---- Directory Listing deaktivieren ----------------------------------------
+Options -Indexes -MultiViews
+
+# ---- Versteckte Dateien (.env, .git, .htaccess, ...) sperren ---------------
+<FilesMatch "^\.">
+    Require all denied
+</FilesMatch>
+
+# ---- Sensible Dateierweiterungen blockieren --------------------------------
+<FilesMatch "\.(env|ini|log|sql|sh|md|lock|json|yaml|yml|bak|backup|swp|dist|example)$">
+    Require all denied
+</FilesMatch>
+
+# Ausnahme: composer-Autoloader darf NICHT aus public/ aufrufbar sein,
+# aber falls hier ein index.json o.ä. erlaubt sein soll, hier whitelisten.
+
+# ---- PHP nur für index.php zulassen ----------------------------------------
+<FilesMatch "\.php$">
+    Require all denied
+</FilesMatch>
+<Files "index.php">
+    Require all granted
+</Files>
+
+# ---- Server-Signatur reduzieren --------------------------------------------
+<IfModule mod_headers.c>
+    Header unset X-Powered-By
+    Header always unset Server
+
+    # Sicherheits-Header
+    Header always set X-Content-Type-Options "nosniff"
+    Header always set X-Frame-Options "DENY"
+    Header always set Referrer-Policy "no-referrer"
+    Header always set Permissions-Policy "geolocation=(), microphone=(), camera=()"
+    # HSTS nur aktivieren, wenn ausschließlich HTTPS bedient wird:
+    # Header always set Strict-Transport-Security "max-age=31536000; includeSubDomains"
+</IfModule>
+
+# ---- Body-Größe für Uploads / Push-Payloads --------------------------------
+<IfModule mod_php.c>
+    php_value upload_max_filesize 8M
+    php_value post_max_size       8M
+</IfModule>
