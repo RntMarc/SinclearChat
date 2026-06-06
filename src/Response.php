@@ -48,6 +48,23 @@ final class Response
         return new self(['error' => 'Method not allowed'], 405);
     }
 
+    public static function forbidden(string $message = 'Forbidden'): self
+    {
+        return new self(['error' => $message], 403);
+    }
+
+    public static function conflict(string $message = 'Conflict'): self
+    {
+        return new self(['error' => $message], 409);
+    }
+
+    public static function unauthorizedWithChallenge(string $message = 'Unauthorized'): self
+    {
+        $response = new self(['error' => $message], 401);
+        $response->headers['WWW-Authenticate'] = 'Bearer realm="chat-api"';
+        return $response;
+    }
+
     public function send(): void
     {
         http_response_code($this->statusCode);
