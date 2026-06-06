@@ -82,6 +82,12 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: Keine Mitgliedschaft im Gruppen-Chat
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
     get:
       operationId: pullMessages
       summary: Nachrichten abrufen
@@ -223,6 +229,41 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+  /api/rooms/{id}/members:
+    get:
+      operationId: getRoomMembers
+      summary: Mitglieder eines Chatraums abrufen
+      description: Gibt alle Mitglieder-IDs eines Chatraums zurück.
+      tags:
+        - Rooms
+      security:
+        - HMACAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Chatraum-ID
+      responses:
+        "200":
+          description: Liste der Mitglieder-IDs
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MemberListResponse"
+        "400":
+          description: Ungültige Anfrage
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Chatraum nicht gefunden
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
 components:
   securitySchemes:
     HMACAuth:
@@ -241,6 +282,10 @@ components:
         status:
           type: string
           example: "ok"
+        database:
+          type: string
+          description: "Verbindungsstatus zur MySQL-Datenbank"
+          example: "connected"
         timestamp:
           type: string
           format: date-time
@@ -371,10 +416,12 @@ components:
           example: 30
         created_at:
           type: string
-          format: date-time
+          description: "MySQL TIMESTAMP (kein ISO-8601, da roh aus der Datenbank)"
+          example: "2026-05-30 12:00:00"
         updated_at:
           type: string
-          format: date-time
+          description: "MySQL TIMESTAMP (kein ISO-8601, da roh aus der Datenbank)"
+          example: "2026-05-30 12:00:00"
     RoomListResponse:
       type: object
       properties:
@@ -387,3 +434,14 @@ components:
       properties:
         data:
           $ref: "#/components/schemas/RoomObject"
+    MemberListResponse:
+      type: object
+      properties:
+        data:
+          type: array
+          description: Liste der User-IDs aller Mitglieder
+          items:
+            type: string
+          example:
+            - "auth0|abc123"
+            - "auth0|def456"
