@@ -50,4 +50,13 @@ final class Config
     {
         return (int) ($this->get($key, $default));
     }
+
+    public function getRequired(string $key): string
+    {
+        $value = $this->get($key);
+        if (!is_string($value) || $value === '') {
+            throw new \RuntimeException("Required config key '{$key}' is missing or empty");
+        }
+        return $value;
+    }
 }

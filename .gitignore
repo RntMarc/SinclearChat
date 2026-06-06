@@ -1,6 +1,7 @@
 /vendor/
 /.env
 /.env.local
+/keys/
 *.log
 *.swp
 .DS_Store

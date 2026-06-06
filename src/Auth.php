@@ -17,6 +17,16 @@ final class Auth
             throw new \RuntimeException('SHARED_SECRET is not configured');
         }
 
+        return self::verifyWithSecret($method, $uri, $body, $headers, $secret);
+    }
+
+    public static function verifyWithSecret(string $method, string $uri, string $body, array $headers, string $secret): bool
+    {
+        if ($secret === '') {
+            throw new \RuntimeException('HMAC secret is empty');
+        }
+
+        $config = Config::getInstance();
         $prefix = (string) $config->get('HMAC_HEADER_PREFIX', 'X-Hub');
         $timestampHeader = $prefix . '-Timestamp';
         $signatureHeader = $prefix . '-Signature';

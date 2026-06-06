@@ -9,6 +9,12 @@ Next.js-Frontend auf Vercel betrieben. Sie verwaltet **keine eigene
 Authentifizierung** – sie vertraut ausschließlich auf die kryptografische
 Signatur der Requests, die aus dem Next.js-Projekt erzeugt wird.
 
+> **Zwei API-Versionen parallel:** Diese Repo enthält sowohl die
+> HMAC-basierte v1 (für das Next.js-Web) als auch die JWT-basierte v2
+> (für native Mobile-Clients). Beide Versionen teilen die Datenbank,
+> Tabellen und Cleanup-Events. Setup und Client-Integration für v2:
+> **[V2_SETUP.md](./V2_SETUP.md)**. OpenAPI-Spec: **[openapi-v2.yaml](./openapi-v2.yaml)**.
+
 ## Inhaltsverzeichnis
 
 - [Funktionsumfang](#funktionsumfang)
@@ -25,6 +31,7 @@ Signatur der Requests, die aus dem Next.js-Projekt erzeugt wird.
 - [Projektstruktur](#projektstruktur)
 - [Sicherheits-Hinweise](#sicherheits-hinweise)
 - [Troubleshooting](#troubleshooting)
+- [API v2 (JWT / OAuth2 / SSE) — siehe V2_SETUP.md](./V2_SETUP.md)
 
 ---
 

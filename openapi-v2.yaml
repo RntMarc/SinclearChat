@@ -1,0 +1,1334 @@
+openapi: "3.1.0"
+info:
+  title: SinclearChat API v2
+  description: |
+    Bearer-Token-geschützte Chat-API (v2) für native Clients (Kotlin Multiplatform).
+    Läuft parallel zur bestehenden HMAC-basierten v1-API.
+
+    ## Authentifizierung
+    - **Access Token:** JWT, RS256, 15 min TTL
+      - Claims: `sub` (user_id), `iss`, `aud=chat-api`, `iat`, `exp`, `jti`, `token_version`
+      - Signiert von Next.js (RS256 private key), validiert vom PHP-Backend (public key)
+    - **Refresh Token:** Opaque (48 Bytes), 30 Tage TTL
+      - SHA-256-Hash in DB, Rotation bei Verwendung, Reuse-Detection (Familie wird widerrufen)
+    - **PKCE:** OAuth 2.0 Authorization Code mit S256 ist Pflicht für Token-Exchange
+
+    ## Login-Flow
+    1. Client öffnet `GET https://app.sinclear.de/api/auth/v2/authorize?redirect_uri=sinclearchat://callback&state=...&code_challenge=...&code_challenge_method=S256` im Systembrowser
+    2. Benutzer authentifiziert sich (Passkey, Discord, E-Mail-OTP)
+    3. Nach erfolgreichem Login redirect zu `redirect_uri?code=xxx&state=yyy`
+    4. Client tauscht Code gegen Tokens: `POST /api/v2/auth/token { grant_type: "authorization_code", code, code_verifier }`
+
+    ## Real-Time
+    - SSE: `GET /api/v2/events` (Bearer, langlaufender Stream, Heartbeat alle 25s, `Last-Event-ID` für Resume)
+    - Polling-Fallback: `GET /api/v2/messages?after=<timestamp>`
+
+    ## User-Identität
+    - `user_id` kommt AUSSCHLIESSLICH aus dem JWT (`sub`-Claim)
+    - Niemals vom Client übermittelt (außer für `POST /api/v2/direct` → Partner-`user_id`)
+  version: "2.0.0"
+  contact:
+    name: SinclearChat
+servers:
+  - url: https://chat.sinclear.de
+    description: Produktiv-Server
+
+tags:
+  - name: Auth
+    description: Token-Lebenszyklus
+  - name: Chats
+    description: Chat-Listen und -Details
+  - name: Direct
+    description: Direktchats
+  - name: Groups
+    description: Gruppen
+  - name: Messages
+    description: Nachrichten
+  - name: Uploads
+    description: Datei-Uploads
+  - name: Users
+    description: Benutzerprofile
+  - name: Presence
+    description: Online-Status
+  - name: Typing
+    description: Tipp-Status
+  - name: Devices
+    description: Push-Benachrichtigungs-Geräte
+  - name: Events
+    description: SSE-Echtzeit-Stream
+
+security:
+  - BearerAuth: []
+
+paths:
+  # ============================================================
+  # Auth
+  # ============================================================
+  /api/v2/auth/token:
+    post:
+      operationId: exchangeToken
+      summary: Code oder Refresh → Access + Refresh Token
+      description: |
+        OAuth 2.0 Token-Exchange.
+        - `grant_type=authorization_code` (mit PKCE): tauscht `code` + `code_verifier` gegen Tokens
+        - `grant_type=refresh_token`: rotiert Refresh-Token in derselben Familie
+      tags: [Auth]
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              oneOf:
+                - $ref: "#/components/schemas/AuthorizationCodeGrant"
+                - $ref: "#/components/schemas/RefreshTokenGrant"
+      responses:
+        "200":
+          description: Tokens erfolgreich ausgestellt
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TokenResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /api/v2/auth/refresh:
+    post:
+      operationId: refreshToken
+      summary: Refresh Token rotieren
+      description: Alias für `POST /api/v2/auth/token` mit `grant_type=refresh_token`
+      tags: [Auth]
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RefreshTokenGrant"
+      responses:
+        "200":
+          description: Neue Tokens
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TokenResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /api/v2/auth/logout:
+    post:
+      operationId: logout
+      summary: Eine Refresh-Token-Familie widerrufen
+      tags: [Auth]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [refresh_token]
+              properties:
+                refresh_token:
+                  type: string
+      responses:
+        "204":
+          description: Erfolgreich abgemeldet
+        "400":
+          $ref: "#/components/responses/BadRequest"
+
+  /api/v2/auth/logout-all:
+    post:
+      operationId: logoutAllDevices
+      summary: Alle Geräte abmelden
+      description: |
+        - Widerruft ALLE Refresh-Token-Familien des Benutzers
+        - Entfernt alle registrierten Push-Geräte
+        - Inkrementiert `token_version` → alle laufenden JWTs werden sofort ungültig
+        - Sendet `force_logout`-Event via SSE
+      tags: [Auth]
+      responses:
+        "204":
+          description: Alle Sitzungen beendet
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /api/v2/auth/me:
+    get:
+      operationId: getMe
+      summary: Eigenes Profil + Token-Claims
+      tags: [Auth]
+      responses:
+        "200":
+          description: Profil + Claims
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MeResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  # ============================================================
+  # Chats
+  # ============================================================
+  /api/v2/chats:
+    get:
+      operationId: listChats
+      summary: Alle Chats des Benutzers
+      description: |
+        Liefert Gruppen + Direktchats in einer einheitlichen Liste.
+        Sortiert nach letzter Nachricht (neueste zuerst).
+      tags: [Chats]
+      responses:
+        "200":
+          description: Chat-Liste
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/ChatSummary"
+
+  /api/v2/chats/unread:
+    get:
+      operationId: getUnreadCounts
+      summary: Anzahl ungelesener Nachrichten
+      tags: [Chats, Messages]
+      responses:
+        "200":
+          description: Counts
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  direct:
+                    type: integer
+                  group:
+                    type: integer
+                  total:
+                    type: integer
+
+  /api/v2/chats/{chatId}:
+    get:
+      operationId: getChat
+      summary: Chat-Details
+      parameters:
+        - $ref: "#/components/parameters/ChatId"
+      tags: [Chats]
+      responses:
+        "200":
+          description: Chat-Details
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    oneOf:
+                      - $ref: "#/components/schemas/DirectChatDetails"
+                      - $ref: "#/components/schemas/GroupDetails"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    delete:
+      operationId: deleteChat
+      summary: Direktchat löschen
+      description: Nur Direktchats können via dieses Endpunkts gelöscht werden.
+      parameters:
+        - $ref: "#/components/parameters/ChatId"
+      tags: [Chats]
+      responses:
+        "204":
+          description: Gelöscht
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+  /api/v2/chats/{chatId}/messages:
+    get:
+      operationId: getChatMessages
+      summary: Nachrichten eines Chats
+      parameters:
+        - $ref: "#/components/parameters/ChatId"
+        - in: query
+          name: before
+          schema:
+            type: string
+            format: date-time
+        - in: query
+          name: after
+          schema:
+            type: string
+            format: date-time
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 50
+      tags: [Chats, Messages]
+      responses:
+        "200":
+          description: Nachrichten
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Message"
+                  pagination:
+                    $ref: "#/components/schemas/Pagination"
+
+  /api/v2/chats/{chatId}/members:
+    get:
+      operationId: getChatMembers
+      summary: Mitglieder eines Chats
+      parameters:
+        - $ref: "#/components/parameters/ChatId"
+      tags: [Chats]
+      responses:
+        "200":
+          description: Mitglieder
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Member"
+
+  /api/v2/chats/{chatId}/read:
+    post:
+      operationId: markChatRead
+      summary: Chat als gelesen markieren
+      parameters:
+        - $ref: "#/components/parameters/ChatId"
+      tags: [Chats, Messages]
+      responses:
+        "204":
+          description: Gelesen
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+  # ============================================================
+  # Direct Chats
+  # ============================================================
+  /api/v2/direct:
+    get:
+      operationId: listDirectChats
+      summary: Direktchats des Benutzers
+      tags: [Direct]
+      responses:
+        "200":
+          description: Liste
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/DirectChatDetails"
+    post:
+      operationId: openOrCreateDirectChat
+      summary: Direktchat erstellen oder öffnen
+      tags: [Direct]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [user_id]
+              properties:
+                user_id:
+                  type: string
+      responses:
+        "200":
+          description: Direktchat-Resource
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  chat_id:
+                    type: string
+                    format: hex
+                  partner_id:
+                    type: string
+                  created_at:
+                    type: string
+                    format: date-time
+
+  /api/v2/direct/{chatId}:
+    get:
+      operationId: getDirectChat
+      summary: Direktchat-Details
+      parameters:
+        - $ref: "#/components/parameters/ChatId"
+      tags: [Direct]
+      responses:
+        "200":
+          description: Direktchat
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: "#/components/schemas/DirectChatDetails"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  # ============================================================
+  # Groups
+  # ============================================================
+  /api/v2/groups:
+    post:
+      operationId: createGroup
+      summary: Gruppe erstellen
+      tags: [Groups]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name:
+                  type: string
+                description:
+                  type: string
+                avatar:
+                  type: string
+                member_ids:
+                  type: array
+                  items:
+                    type: string
+                ttl_days:
+                  type: integer
+                  default: 30
+      responses:
+        "201":
+          description: Gruppe erstellt
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: "#/components/schemas/GroupDetails"
+
+  /api/v2/groups/{id}:
+    parameters:
+      - in: path
+        name: id
+        required: true
+        schema:
+          type: string
+    get:
+      operationId: getGroup
+      summary: Gruppendetails
+      tags: [Groups]
+      responses:
+        "200":
+          description: Gruppe
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: "#/components/schemas/GroupDetails"
+    patch:
+      operationId: updateGroup
+      summary: Gruppe umbenennen / Avatar ändern
+      tags: [Groups]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                description:
+                  type: string
+                avatar:
+                  type: string
+      responses:
+        "200":
+          description: Aktualisiert
+    delete:
+      operationId: deleteGroup
+      summary: Gruppe löschen (nur Owner)
+      tags: [Groups]
+      responses:
+        "204":
+          description: Gelöscht
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+  /api/v2/groups/{id}/leave:
+    parameters:
+      - in: path
+        name: id
+        required: true
+        schema:
+          type: string
+    post:
+      operationId: leaveGroup
+      summary: Gruppe verlassen
+      tags: [Groups]
+      responses:
+        "204":
+          description: Verlassen
+        "409":
+          description: Owner muss zuerst Eigentum übertragen
+
+  /api/v2/groups/{id}/members:
+    parameters:
+      - in: path
+        name: id
+        required: true
+        schema:
+          type: string
+    post:
+      operationId: addGroupMember
+      summary: Mitglied hinzufügen (admin+)
+      tags: [Groups]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [user_id]
+              properties:
+                user_id:
+                  type: string
+                role:
+                  type: string
+                  enum: [member, admin]
+      responses:
+        "200":
+          description: Hinzugefügt
+
+  /api/v2/groups/{id}/members/{userId}:
+    parameters:
+      - in: path
+        name: id
+        required: true
+        schema:
+          type: string
+      - in: path
+        name: userId
+        required: true
+        schema:
+          type: string
+    delete:
+      operationId: removeGroupMember
+      summary: Mitglied entfernen (admin+)
+      tags: [Groups]
+      responses:
+        "204":
+          description: Entfernt
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+  # ============================================================
+  # Messages
+  # ============================================================
+  /api/v2/messages:
+    post:
+      operationId: sendMessage
+      summary: Nachricht senden
+      description: |
+        `user_id` wird aus dem Token gelesen, **nicht** aus dem Body.
+      tags: [Messages]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/MessageInput"
+      responses:
+        "201":
+          description: Gesendet
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    $ref: "#/components/schemas/Message"
+    get:
+      operationId: pullMessages
+      summary: Nachrichten abrufen
+      tags: [Messages]
+      parameters:
+        - in: query
+          name: chat_type
+          required: true
+          schema:
+            type: string
+            enum: [direct, group]
+        - in: query
+          name: chat_id
+          required: true
+          schema:
+            type: string
+        - in: query
+          name: after
+          schema:
+            type: string
+            format: date-time
+        - in: query
+          name: before
+          schema:
+            type: string
+            format: date-time
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 50
+      responses:
+        "200":
+          description: Nachrichten
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Message"
+                  pagination:
+                    $ref: "#/components/schemas/Pagination"
+
+  /api/v2/messages/read:
+    post:
+      operationId: markMessagesRead
+      summary: Mehrere Chats als gelesen markieren
+      tags: [Messages]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              oneOf:
+                - type: object
+                  required: [chat_id, chat_type]
+                  properties:
+                    chat_id:
+                      type: string
+                    chat_type:
+                      type: string
+                      enum: [direct, group]
+                - type: object
+                  required: [chats]
+                  properties:
+                    chats:
+                      type: array
+                      items:
+                        type: object
+                        required: [chat_id, chat_type]
+                        properties:
+                          chat_id:
+                            type: string
+                          chat_type:
+                            type: string
+                            enum: [direct, group]
+      responses:
+        "204":
+          description: Gelesen
+
+  # ============================================================
+  # Uploads
+  # ============================================================
+  /api/v2/uploads:
+    post:
+      operationId: uploadFile
+      summary: Datei hochladen
+      description: |
+        Akzeptiert Daten als `data:image/...;base64,...` URL oder reines Base64.
+        Speichert über den konfigurierten Storage-Driver.
+      tags: [Uploads]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [image]
+              properties:
+                image:
+                  type: string
+                  description: "data: URL oder Base64"
+      responses:
+        "201":
+          description: Upload erfolgreich
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: "#/components/schemas/Upload"
+
+  /api/v2/uploads/{id}:
+    parameters:
+      - in: path
+        name: id
+        required: true
+        schema:
+          type: string
+    get:
+      operationId: downloadFile
+      summary: Datei abrufen
+      description: "Auth-Check: User muss Zugriff auf den Chat haben, in dem die Datei verwendet wird."
+      tags: [Uploads]
+      responses:
+        "200":
+          description: Datei (base64-encoded in `data.binary`)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: "#/components/schemas/Upload"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  # ============================================================
+  # Users
+  # ============================================================
+  /api/v2/users/me:
+    get:
+      operationId: getOwnProfile
+      summary: Eigenes Profil
+      tags: [Users]
+      responses:
+        "200":
+          description: Profil
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: "#/components/schemas/UserProfile"
+    patch:
+      operationId: updateOwnProfile
+      summary: Eigenes Profil aktualisieren
+      tags: [Users]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                display_name:
+                  type: string
+                avatar:
+                  type: string
+                status_message:
+                  type: string
+      responses:
+        "200":
+          description: Aktualisiert
+
+  /api/v2/users/{id}:
+    parameters:
+      - in: path
+        name: id
+        required: true
+        schema:
+          type: string
+    get:
+      operationId: getUserProfile
+      summary: Profil eines anderen Benutzers
+      tags: [Users]
+      responses:
+        "200":
+          description: Profil
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: "#/components/schemas/UserProfile"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  # ============================================================
+  # Presence
+  # ============================================================
+  /api/v2/presence:
+    post:
+      operationId: setPresence
+      summary: Eigenen Status setzen
+      tags: [Presence]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties:
+                status:
+                  type: string
+                  enum: [online, offline]
+      responses:
+        "200":
+          description: Gesetzt
+
+  /api/v2/presence/{userId}:
+    parameters:
+      - in: path
+        name: userId
+        required: true
+        schema:
+          type: string
+    get:
+      operationId: getPresence
+      summary: Status eines Benutzers
+      tags: [Presence]
+      responses:
+        "200":
+          description: Status
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: "#/components/schemas/PresenceStatus"
+
+  # ============================================================
+  # Typing
+  # ============================================================
+  /api/v2/typing:
+    post:
+      operationId: sendTypingStatus
+      summary: Tipp-Status senden
+      description: Wird via SSE an andere Mitglieder des Chats propagiert.
+      tags: [Typing]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [chat_id, chat_type, action]
+              properties:
+                chat_id:
+                  type: string
+                chat_type:
+                  type: string
+                  enum: [direct, group]
+                action:
+                  type: string
+                  enum: [start, stop]
+      responses:
+        "204":
+          description: Gesendet
+
+  # ============================================================
+  # Devices
+  # ============================================================
+  /api/v2/devices:
+    get:
+      operationId: listDevices
+      summary: Eigene Push-Geräte
+      tags: [Devices]
+      responses:
+        "200":
+          description: Geräte
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Device"
+    post:
+      operationId: registerDevice
+      summary: Gerät registrieren / aktualisieren
+      description: |
+        `device_id` ist client-stabil (z.B. UUID).
+        Bei erneutem Aufruf mit gleicher `(user_id, platform, device_id)` wird der `push_token` aktualisiert.
+      tags: [Devices]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [platform, device_id, push_token]
+              properties:
+                platform:
+                  type: string
+                  enum: [android, ios, linux, windows, web, macos]
+                device_id:
+                  type: string
+                push_token:
+                  type: string
+                app_version:
+                  type: string
+      responses:
+        "201":
+          description: Registriert
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: "#/components/schemas/Device"
+
+  /api/v2/devices/{id}:
+    parameters:
+      - in: path
+        name: id
+        required: true
+        schema:
+          type: string
+    delete:
+      operationId: deleteDevice
+      summary: Gerät entfernen
+      tags: [Devices]
+      responses:
+        "204":
+          description: Entfernt
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  # ============================================================
+  # Events (SSE)
+  # ============================================================
+  /api/v2/events:
+    get:
+      operationId: streamEvents
+      summary: SSE-Echtzeit-Stream
+      description: |
+        Langlaufender Stream, der Server-Sent Events liefert.
+        - **Heartbeat:** Alle 25s eine Comment-Zeile (`: heartbeat t=...`)
+        - **Last-Event-ID:** Bei Reconnect werden verpasste Events aus `sse_events`-Tabelle nachgeliefert (Retention 15 min)
+        - **Event-Typen:** `message`, `message.edited`, `message.deleted`, `typing`, `presence`, `read`, `group_updated`, `group_member_added`, `group_member_removed`, `chat_deleted`, `user_profile_updated`, `force_logout`
+      tags: [Events]
+      parameters:
+        - in: header
+          name: Last-Event-ID
+          schema:
+            type: integer
+          description: Letzte empfangene Event-ID (für Resume bei Reconnect)
+      responses:
+        "200":
+          description: Event-Stream
+          content:
+            text/event-stream:
+              schema:
+                type: string
+
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: |
+        Access Token (RS256, 15 min TTL).
+        Claims: `sub` (user_id), `iss`, `aud=chat-api`, `iat`, `exp`, `jti`, `token_version`.
+
+  parameters:
+    ChatId:
+      in: path
+      name: chatId
+      required: true
+      schema:
+        type: string
+      description: |
+        Für Direktchats: 32-stelliger Hex-String (UUID v7).
+        Für Gruppen: `ChatRoom.id` (varchar).
+
+  responses:
+    BadRequest:
+      description: Ungültige Anfrage
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Unauthorized:
+      description: Token fehlt, ist abgelaufen oder ungültig
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Forbidden:
+      description: Keine Berechtigung
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    NotFound:
+      description: Nicht gefunden
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+
+  schemas:
+    Error:
+      type: object
+      properties:
+        error:
+          type: string
+
+    AuthorizationCodeGrant:
+      type: object
+      required: [grant_type, code, code_verifier]
+      properties:
+        grant_type:
+          type: string
+          enum: [authorization_code]
+        code:
+          type: string
+        code_verifier:
+          type: string
+          description: Original-Random-String (43-128 Base64URL-Zeichen)
+
+    RefreshTokenGrant:
+      type: object
+      required: [grant_type, refresh_token]
+      properties:
+        grant_type:
+          type: string
+          enum: [refresh_token]
+        refresh_token:
+          type: string
+
+    TokenResponse:
+      type: object
+      properties:
+        access_token:
+          type: string
+          description: JWT (RS256)
+        token_type:
+          type: string
+          enum: [Bearer]
+        expires_in:
+          type: integer
+          description: Sekunden bis Access Token abläuft
+        refresh_token:
+          type: string
+          description: Plaintext-Token (48 Bytes Base64URL); NUR beim Client speichern
+        family_id:
+          type: string
+          format: hex
+          description: UUID v7 der Refresh-Token-Familie
+
+    MeResponse:
+      type: object
+      properties:
+        id:
+          type: string
+        display_name:
+          type: string
+        avatar:
+          type: string
+          nullable: true
+        status_message:
+          type: string
+          nullable: true
+        roles:
+          type: array
+          items:
+            type: string
+        created_at:
+          type: string
+          format: date-time
+        token:
+          $ref: "#/components/schemas/TokenClaims"
+
+    TokenClaims:
+      type: object
+      properties:
+        sub:
+          type: string
+        iss:
+          type: string
+        aud:
+          oneOf:
+            - type: string
+            - type: array
+              items:
+                type: string
+        iat:
+          type: integer
+        exp:
+          type: integer
+        jti:
+          type: string
+        token_version:
+          type: integer
+
+    ChatSummary:
+      type: object
+      properties:
+        id:
+          type: string
+        type:
+          type: string
+          enum: [direct, group]
+        name:
+          type: string
+        description:
+          type: string
+          nullable: true
+        avatar:
+          type: string
+          nullable: true
+        member_count:
+          type: integer
+        partner_id:
+          type: string
+          description: Nur bei direct
+        last_message:
+          $ref: "#/components/schemas/MessagePreview"
+        unread_count:
+          type: integer
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    MessagePreview:
+      type: object
+      properties:
+        id:
+          type: string
+        user_id:
+          type: string
+        body:
+          type: string
+        attachment:
+          $ref: "#/components/schemas/Attachment"
+        created_at:
+          type: string
+          format: date-time
+
+    DirectChatDetails:
+      type: object
+      properties:
+        id:
+          type: string
+          format: hex
+        type:
+          type: string
+          enum: [direct]
+        partner_id:
+          type: string
+        partner:
+          $ref: "#/components/schemas/UserProfile"
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    GroupDetails:
+      type: object
+      properties:
+        id:
+          type: string
+        type:
+          type: string
+          enum: [group]
+        name:
+          type: string
+        description:
+          type: string
+          nullable: true
+        avatar:
+          type: string
+          nullable: true
+        ttl_days:
+          type: integer
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    Member:
+      type: object
+      properties:
+        user_id:
+          type: string
+        role:
+          type: string
+          enum: [owner, admin, member]
+        joined_at:
+          type: string
+          format: date-time
+
+    MessageInput:
+      type: object
+      required: [chat_id, chat_type, body]
+      properties:
+        chat_id:
+          type: string
+          description: |
+            Für direct: User-ID des Partners.
+            Für group: Room-ID.
+        chat_type:
+          type: string
+          enum: [direct, group]
+        body:
+          type: string
+          maxLength: 65000
+        attachment:
+          $ref: "#/components/schemas/Attachment"
+
+    Message:
+      type: object
+      properties:
+        id:
+          type: string
+          format: hex
+        user_id:
+          type: string
+        chat_id:
+          type: string
+        chat_type:
+          type: string
+          enum: [direct, group]
+        direct_chat_id:
+          type: string
+          format: hex
+          nullable: true
+        body:
+          type: string
+        attachment:
+          $ref: "#/components/schemas/Attachment"
+        created_at:
+          type: string
+          format: date-time
+
+    Attachment:
+      type: object
+      properties:
+        upload_id:
+          type: string
+          format: hex
+        type:
+          type: string
+          enum: [image, link, file]
+        data:
+          type: string
+          description: Nur für v1-Migration / Inline-Data
+
+    Pagination:
+      type: object
+      properties:
+        has_more:
+          type: boolean
+        next_before:
+          type: string
+          format: date-time
+          nullable: true
+
+    Upload:
+      type: object
+      properties:
+        id:
+          type: string
+          format: hex
+        filename:
+          type: string
+        mime_type:
+          type: string
+        size_bytes:
+          type: integer
+        url:
+          type: string
+
+    UserProfile:
+      type: object
+      properties:
+        id:
+          type: string
+        display_name:
+          type: string
+        avatar:
+          type: string
+          nullable: true
+        status_message:
+          type: string
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    PresenceStatus:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [online, offline]
+        last_seen_at:
+          type: string
+          format: date-time
+          nullable: true
+
+    Device:
+      type: object
+      properties:
+        id:
+          type: string
+          format: hex
+        platform:
+          type: string
+        device_id:
+          type: string
+        app_version:
+          type: string
+          nullable: true
+        last_access_at:
+          type: string
+          format: date-time
+        created_at:
+          type: string
+          format: date-time
