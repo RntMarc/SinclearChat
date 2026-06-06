@@ -73,28 +73,38 @@ php scripts/migrate.php
 This applies 001–005 in order and creates:
 - `auth_codes`, `refresh_token_families`, `refresh_tokens`, `jti_blacklist`
 - `direct_chats` (with `chk_pair_order` CHECK constraint)
-- `uploads`, `user_profiles`, `chat_read_receipts`, `user_presence`,
+- `user_profiles`, `chat_read_receipts`, `user_presence`,
   `user_devices`, `sse_events`
 - Adds `role` to `ChatRoomMembers`, `avatar` to `ChatRooms`,
-  `direct_chat_id`/`attachment_upload_id` to `ChatMessages`
+  `direct_chat_id` to `ChatMessages`
 - 4 cleanup events (`cleanup_messages`, `cleanup_sse_events`,
   `cleanup_jti_blacklist`, `cleanup_old_read_receipts`)
 
-### 1.4 Configure the storage driver
+### 1.4 Attachments
 
-For v2.0, only the `local` driver ships. The PHP process needs read/write
-on the configured path:
+Attachments stay in the database exactly as in v1 — base64 payload
+stored in `ChatMessages.attachment_body` (LONGTEXT). There is **no
+separate upload endpoint**, **no file storage layer**, and **no
+webserver `alias` configuration**. The client base64-encodes the file
+and sends it inline with the message:
 
-```ini
-STORAGE_DRIVER=local
-STORAGE_LOCAL_PATH=/var/sinclearchat/uploads
-STORAGE_LOCAL_PUBLIC_URL=https://chat.sinclear.de/files
-MAX_UPLOAD_SIZE_BYTES=10485760
+```json
+POST /api/v2/messages
+{
+  "chat_type": "direct",
+  "chat_id": "019e9ecf-...",
+  "body": "Look at this:",
+  "attachment": {
+    "type": "image",
+    "data": "data:image/jpeg;base64,/9j/4AAQ..."
+  }
+}
 ```
 
-The webserver must serve `STORAGE_LOCAL_PATH` at `STORAGE_LOCAL_PUBLIC_URL`
-(Nginx `alias` or Apache `Alias` directive). Auth is enforced by the
-`GET /api/v2/uploads/{id}` endpoint — direct file URLs would 403.
+Server-enforced size cap: `MAX_ATTACHMENT_SIZE_BYTES` (default 600,000
+bytes of base64 — ~440 KB binary). The client should pre-process with
+the `clientProcessImage()` helper (resize to 1920×1920, JPEG q=80)
+before upload to stay under the cap.
 
 ---
 
@@ -440,7 +450,6 @@ See [`openapi-v2.yaml`](./openapi-v2.yaml) for the full spec.
 | **Typing** | `POST /api/v2/typing` |
 | **Presence** | `POST /api/v2/presence`, `GET /api/v2/presence/{userId}` |
 | **Devices** | `GET /api/v2/devices`, `POST /api/v2/devices`, `DELETE /api/v2/devices/{id}` |
-| **Uploads** | `POST /api/v2/uploads`, `GET /api/v2/uploads/{id}` |
 | **Events** | `GET /api/v2/events` (SSE) |
 
 Public (no auth): `GET /api/health`, `POST /api/v2/auth/token`,
@@ -464,8 +473,8 @@ Public (no auth): `GET /api/health`, `POST /api/v2/auth/token`,
 - [ ] Validate `Last-Event-ID` is a non-negative integer (the SSE
       endpoint does this server-side; clients should not trust arbitrary
       values).
-- [ ] Upload paths in the `storage_path` column are **opaque** to the
-      client. The client only ever uses the `id` from the upload response.
+- [ ] Pre-process attachments client-side (`clientProcessImage()`) so
+      the base64 payload stays under `MAX_ATTACHMENT_SIZE_BYTES`.
 - [ ] Do not include `user_id` in any v2 request body. It will be
       silently ignored (or rejected, depending on the endpoint) — the
       server reads it from the token.
@@ -526,10 +535,12 @@ mismatch).
 
 By design — reconnect with `Last-Event-ID: <last seen id>`.
 
-### 413 from uploads
+### 413 / "attachment too large"
 
-`MAX_UPLOAD_SIZE_BYTES` exceeded. Adjust PHP `.env` AND the webserver
-`client_max_body_size` (Nginx) / `LimitRequestBody` (Apache).
+`MAX_ATTACHMENT_SIZE_BYTES` exceeded (default 600 KB base64 = ~440 KB
+binary). Pre-process the image client-side with `clientProcessImage()`
+to keep payloads small, or raise the limit in PHP `.env` AND the
+webserver `client_max_body_size` (Nginx) / `LimitRequestBody` (Apache).
 
 ### Database collation errors
 

@@ -11,7 +11,6 @@ use SinclearChat\Models\Message;
 use SinclearChat\Models\ReadReceipt;
 use SinclearChat\Models\Room;
 use SinclearChat\Models\SseEvent;
-use SinclearChat\Models\Upload;
 use SinclearChat\Response;
 
 final class MessageV2Controller
@@ -44,25 +43,18 @@ final class MessageV2Controller
         }
 
         $attachment = $input['attachment'] ?? null;
-        $attachmentUploadId = null;
         $attachmentType = null;
         $attachmentBody = null;
 
         if (is_array($attachment)) {
             $type = (string) ($attachment['type'] ?? 'image');
-            if (isset($attachment['upload_id'])) {
-                $attachmentUploadId = (string) $attachment['upload_id'];
-                $upload = Upload::findById($attachmentUploadId);
-                if ($upload === null || $upload['user_id'] !== $userId) {
-                    return Response::error('Invalid upload_id', 400);
-                }
-                $attachmentType = $type;
-            } elseif (isset($attachment['data'])) {
-                $attachmentBody = (string) $attachment['data'];
-                $attachmentType = $type;
-                if (strlen($attachmentBody) > MessageController::MAX_ATTACHMENT_SIZE_BYTES) {
+            $body = isset($attachment['data']) ? (string) $attachment['data'] : null;
+            if ($body !== null && $body !== '') {
+                if (strlen($body) > MessageController::MAX_ATTACHMENT_SIZE_BYTES) {
                     return Response::error('attachment too large', 400);
                 }
+                $attachmentType = $type;
+                $attachmentBody = $body;
             }
         }
 
@@ -96,7 +88,6 @@ final class MessageV2Controller
                 $body,
                 $attachmentType,
                 $attachmentBody,
-                $attachmentUploadId,
                 $directChatId,
             );
         } catch (\Throwable $e) {

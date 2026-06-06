@@ -44,8 +44,6 @@ tags:
     description: Gruppen
   - name: Messages
     description: Nachrichten
-  - name: Uploads
-    description: Datei-Uploads
   - name: Users
     description: Benutzerprofile
   - name: Presence
@@ -660,66 +658,6 @@ paths:
           description: Gelesen
 
   # ============================================================
-  # Uploads
-  # ============================================================
-  /api/v2/uploads:
-    post:
-      operationId: uploadFile
-      summary: Datei hochladen
-      description: |
-        Akzeptiert Daten als `data:image/...;base64,...` URL oder reines Base64.
-        Speichert über den konfigurierten Storage-Driver.
-      tags: [Uploads]
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [image]
-              properties:
-                image:
-                  type: string
-                  description: "data: URL oder Base64"
-      responses:
-        "201":
-          description: Upload erfolgreich
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  data:
-                    $ref: "#/components/schemas/Upload"
-
-  /api/v2/uploads/{id}:
-    parameters:
-      - in: path
-        name: id
-        required: true
-        schema:
-          type: string
-    get:
-      operationId: downloadFile
-      summary: Datei abrufen
-      description: "Auth-Check: User muss Zugriff auf den Chat haben, in dem die Datei verwendet wird."
-      tags: [Uploads]
-      responses:
-        "200":
-          description: Datei (base64-encoded in `data.binary`)
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  data:
-                    $ref: "#/components/schemas/Upload"
-        "403":
-          $ref: "#/components/responses/Forbidden"
-        "404":
-          $ref: "#/components/responses/NotFound"
-
-  # ============================================================
   # Users
   # ============================================================
   /api/v2/users/me:
@@ -1246,16 +1184,14 @@ components:
 
     Attachment:
       type: object
+      required: [type, data]
       properties:
-        upload_id:
-          type: string
-          format: hex
         type:
           type: string
           enum: [image, link, file]
         data:
           type: string
-          description: Nur für v1-Migration / Inline-Data
+          description: Base64-Payload der Datei (wird direkt in der DB gespeichert, max. 600 KB)
 
     Pagination:
       type: object
@@ -1266,21 +1202,6 @@ components:
           type: string
           format: date-time
           nullable: true
-
-    Upload:
-      type: object
-      properties:
-        id:
-          type: string
-          format: hex
-        filename:
-          type: string
-        mime_type:
-          type: string
-        size_bytes:
-          type: integer
-        url:
-          type: string
 
     UserProfile:
       type: object
