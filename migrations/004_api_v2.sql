@@ -69,31 +69,17 @@ CREATE TABLE IF NOT EXISTS direct_chats (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- ChatMessages: Erweiterungen für v2 -------------------------------------------
+-- v2 nutzt weiterhin die v1-Felder attachment_type + attachment_body
+-- (Base64-Payload in LONGTEXT). Kein separates uploads-Tabelle, kein
+-- Storage-Layer, keine Webserver-Alias-Konfiguration.
 ALTER TABLE ChatMessages
-    ADD COLUMN direct_chat_id BINARY(16) DEFAULT NULL AFTER chat_type,
-    ADD COLUMN attachment_upload_id BINARY(16) DEFAULT NULL AFTER attachment_body;
+    ADD COLUMN direct_chat_id BINARY(16) DEFAULT NULL AFTER chat_type;
 
 ALTER TABLE ChatMessages
-    ADD INDEX idx_messages_direct (direct_chat_id, created_at),
-    ADD INDEX idx_messages_upload (attachment_upload_id);
-
--- Uploads (Storage-abstrahiert) -----------------------------------------------
-CREATE TABLE IF NOT EXISTS uploads (
-    id BINARY(16) NOT NULL PRIMARY KEY,
-    user_id VARCHAR(255) NOT NULL,
-    filename VARCHAR(255) NOT NULL,
-    mime_type VARCHAR(100) NOT NULL,
-    size_bytes INT UNSIGNED NOT NULL,
-    storage_path VARCHAR(500) NOT NULL,
-    storage_driver VARCHAR(50) NOT NULL DEFAULT 'local',
-    thumbnail_path VARCHAR(500) DEFAULT NULL,
-    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    INDEX idx_uploads_user (user_id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+    ADD INDEX idx_messages_direct (direct_chat_id, created_at);
 
 ALTER TABLE ChatMessages
-    ADD CONSTRAINT fk_messages_direct FOREIGN KEY (direct_chat_id) REFERENCES direct_chats(id) ON DELETE SET NULL,
-    ADD CONSTRAINT fk_messages_upload FOREIGN KEY (attachment_upload_id) REFERENCES uploads(id) ON DELETE SET NULL;
+    ADD CONSTRAINT fk_messages_direct FOREIGN KEY (direct_chat_id) REFERENCES direct_chats(id) ON DELETE SET NULL;
 
 -- User Profiles (Cache) --------------------------------------------------------
 CREATE TABLE IF NOT EXISTS user_profiles (

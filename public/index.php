@@ -19,7 +19,6 @@ use SinclearChat\Controllers\UserController;
 use SinclearChat\Controllers\PresenceController;
 use SinclearChat\Controllers\TypingController;
 use SinclearChat\Controllers\DeviceController;
-use SinclearChat\Controllers\UploadController;
 use SinclearChat\Controllers\EventController;
 
 header_remove('X-Powered-By');
@@ -28,7 +27,7 @@ $config = Config::getInstance();
 
 $corsOrigin = (string) $config->get('CORS_ORIGIN', '*');
 header("Access-Control-Allow-Origin: {$corsOrigin}");
-header('Access-Control-Allow-Methods: GET, POST, DELETE, OPTIONS');
+header('Access-Control-Allow-Methods: GET, POST, PATCH, DELETE, OPTIONS');
 header('Access-Control-Allow-Headers: Content-Type, X-Hub-Timestamp, X-Hub-Signature, Authorization, Last-Event-ID');
 header('Access-Control-Max-Age: 86400');
 header('Vary: Origin');
@@ -140,10 +139,6 @@ $router->delete('/api/v2/groups/{id}/members/{userId}', static fn(array $p) => G
 $router->post('/api/v2/messages', static fn() => MessageV2Controller::push());
 $router->get('/api/v2/messages', static fn() => MessageV2Controller::pull());
 $router->post('/api/v2/messages/read', static fn() => MessageV2Controller::read());
-
-// Uploads
-$router->post('/api/v2/uploads', static fn() => UploadController::upload());
-$router->get('/api/v2/uploads/{id}', static fn(array $p) => UploadController::download($p));
 
 // Users
 $router->get('/api/v2/users/me', static fn() => UserController::me());

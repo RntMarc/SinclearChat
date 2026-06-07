@@ -16,7 +16,6 @@ final class Message
         string $body,
         ?string $attachmentType = null,
         ?string $attachmentBody = null,
-        ?string $attachmentUploadId = null,
         ?string $directChatId = null,
     ): array {
         $db = Database::getConnection();
@@ -24,15 +23,14 @@ final class Message
         $idBytes = UuidV7::toBytes($id);
 
         $directChatIdBytes = $directChatId !== null ? UuidV7::toBytes($directChatId) : null;
-        $uploadIdBytes = $attachmentUploadId !== null ? UuidV7::toBytes($attachmentUploadId) : null;
 
         $stmt = $db->prepare(
             'INSERT INTO ChatMessages
                 (id, user_id, chat_id, chat_type, direct_chat_id, body,
-                 attachment_type, attachment_body, attachment_upload_id)
+                 attachment_type, attachment_body)
              VALUES
                 (:id, :user_id, :chat_id, :chat_type, :direct_chat_id, :body,
-                 :attachment_type, :attachment_body, :attachment_upload_id)'
+                 :attachment_type, :attachment_body)'
         );
 
         $stmt->execute([
@@ -44,7 +42,6 @@ final class Message
             ':body'                => $body,
             ':attachment_type'     => $attachmentType,
             ':attachment_body'     => $attachmentBody,
-            ':attachment_upload_id' => $uploadIdBytes,
         ]);
 
         return self::findById($id);
@@ -61,7 +58,7 @@ final class Message
 
         $stmt = $db->prepare(
             'SELECT id, user_id, chat_id, chat_type, direct_chat_id, body,
-                    attachment_type, attachment_body, attachment_upload_id, created_at
+                    attachment_type, attachment_body, created_at
              FROM ChatMessages WHERE id = :id'
         );
         $stmt->execute([':id' => $idBytes]);
@@ -103,7 +100,7 @@ final class Message
 
         $where = implode(' AND ', $conditions);
         $sql = "SELECT id, user_id, chat_id, chat_type, direct_chat_id, body,
-                       attachment_type, attachment_body, attachment_upload_id, created_at
+                       attachment_type, attachment_body, created_at
                 FROM ChatMessages WHERE {$where}
                 ORDER BY created_at DESC
                 LIMIT :limit";
@@ -153,7 +150,7 @@ final class Message
 
         $where = implode(' AND ', $conditions);
         $sql = "SELECT m.id, m.user_id, m.chat_id, m.chat_type, m.direct_chat_id, m.body,
-                       m.attachment_type, m.attachment_body, m.attachment_upload_id, m.created_at
+                       m.attachment_type, m.attachment_body, m.created_at
                 FROM ChatMessages m WHERE {$where}
                 ORDER BY m.created_at DESC
                 LIMIT :limit";
@@ -216,7 +213,7 @@ final class Message
 
         $where = implode(' AND ', $conditions);
         $sql = "SELECT m.id, m.user_id, m.chat_id, m.chat_type, m.direct_chat_id, m.body,
-                       m.attachment_type, m.attachment_body, m.attachment_upload_id, m.created_at
+                       m.attachment_type, m.attachment_body, m.created_at
                 FROM ChatMessages m WHERE {$where}
                 ORDER BY m.created_at DESC
                 LIMIT :limit";
@@ -248,7 +245,7 @@ final class Message
         if ($chatType === 'direct') {
             $stmt = $db->prepare(
                 "SELECT m.id, m.user_id, m.chat_id, m.chat_type, m.direct_chat_id, m.body,
-                        m.attachment_type, m.attachment_body, m.attachment_upload_id, m.created_at
+                        m.attachment_type, m.attachment_body, m.created_at
                  FROM ChatMessages m
                  WHERE m.chat_type = 'direct'
                    AND (
@@ -261,7 +258,7 @@ final class Message
         } else {
             $stmt = $db->prepare(
                 "SELECT m.id, m.user_id, m.chat_id, m.chat_type, m.direct_chat_id, m.body,
-                        m.attachment_type, m.attachment_body, m.attachment_upload_id, m.created_at
+                        m.attachment_type, m.attachment_body, m.created_at
                  FROM ChatMessages m
                  WHERE m.chat_type = 'group' AND m.chat_id = :chat_id
                    AND EXISTS (SELECT 1 FROM ChatRoomMembers crm
@@ -282,7 +279,7 @@ final class Message
                 "SELECT
                     CASE WHEN m.user_id = :user_id THEN m.chat_id ELSE m.user_id END AS chat_id,
                     m.id, m.user_id, m.body, m.attachment_type, m.attachment_body,
-                    m.attachment_upload_id, m.created_at, m.direct_chat_id
+                    m.created_at, m.direct_chat_id
                  FROM ChatMessages m
                  INNER JOIN (
                     SELECT
@@ -302,7 +299,7 @@ final class Message
         } else {
             $stmt = $db->prepare(
                 "SELECT m.id, m.user_id, m.chat_id, m.body, m.attachment_type,
-                        m.attachment_body, m.attachment_upload_id, m.created_at
+                        m.attachment_body, m.created_at
                  FROM ChatMessages m
                  INNER JOIN (
                     SELECT chat_id, MAX(created_at) AS max_created
@@ -323,12 +320,7 @@ final class Message
     private static function formatRow(array $row): array
     {
         $attachment = null;
-        if (!empty($row['attachment_upload_id'])) {
-            $attachment = [
-                'upload_id' => bin2hex((string) $row['attachment_upload_id']),
-                'type' => $row['attachment_type'] ?? 'image',
-            ];
-        } elseif (!empty($row['attachment_body'])) {
+        if (!empty($row['attachment_body'])) {
             $attachment = [
                 'type' => $row['attachment_type'] ?? 'image',
                 'data' => $row['attachment_body'],
