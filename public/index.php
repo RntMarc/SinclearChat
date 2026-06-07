@@ -60,6 +60,22 @@ if (in_array($uri, $publicPaths, true)) {
     } else {
         // nothing — bearer wird im Controller validiert
     }
+} elseif (str_starts_with($uri, '/api/internal/')) {
+    // Internal HMAC (AUTH_INTERNAL_SECRET)
+    $body = file_get_contents('php://input') ?: '';
+    $headers = getRequestHeaders();
+    $internalSecret = (string) $config->get('AUTH_INTERNAL_SECRET', '');
+
+    if ($internalSecret === '') {
+        error_log('[SinclearChat] AUTH_INTERNAL_SECRET is not configured');
+        Response::unauthorized('Internal auth not configured')->send();
+        exit;
+    }
+
+    if (!Auth::verifyWithSecret($method, $uri, $body, $headers, $internalSecret)) {
+        Response::unauthorized('Invalid or missing internal HMAC signature')->send();
+        exit;
+    }
 } else {
     // v1: HMAC
     $body = file_get_contents('php://input') ?: '';
